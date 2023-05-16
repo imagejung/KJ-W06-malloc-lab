@@ -50,11 +50,12 @@ team_t team = {
 #define PREV_BLKP(bp)       ((char*)(bp) - GET_SIZE(((char*)(bp) - DSIZE))) // 이전 블록의 블록 포인터 가리킴 (payload 첫 바이트, header 아님)
 
 // .h에 없는 함수들 먼저 선언 
-static void *extend_heap(size_t words);
-static void *coalesce(void *bp);
-static void *find_fit(size_t asize);
-static void place(void *bp, size_t asize);
-void* heap_listp;
+static void* extend_heap(size_t words);
+static void* coalesce(void *bp);
+static void* find_fit(size_t asize);
+static void  place(void *bp, size_t asize);
+static void* heap_listp; 
+static void* last_bp; // next-fit 위함. bp 반환시 계속 last_bp에 업데이트 저장
 
  
 // mm_init함수. Prologue Header/Footer와 Epilogue Header 생성
@@ -74,6 +75,8 @@ int mm_init(void)
     // Epilogue Header를 CHUNKSIZE 맨 끝으로 보내줌
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL) // mem_max_addr 넘어서면 -1 return (err)
         return -1;
+    // heap_listp void형 포인터 이므로 char형 포인터로 변환
+    last_bp = (char*)heap_listp;
     return 0;
 }
 
@@ -110,6 +113,7 @@ static void *coalesce(void *bp)
 
     // case1, 앞뒤가 다 할당 되어 있음
     if (prev_alloc && next_alloc){
+        last_bp = bp;
         return bp;
     }
 
@@ -135,6 +139,7 @@ static void *coalesce(void *bp)
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size,0));
         bp = PREV_BLKP(bp);
     }
+    last_bp = bp;
     return bp;
 }
 
@@ -161,6 +166,7 @@ void *mm_malloc(size_t size)
     // asize의 블록크기로 할당할 수 있는 위치 찾기
     if ((bp = find_fit(asize)) != NULL) {
         place(bp, asize); // 블록을 찾으면 요청한 블록을 배치하고 남는부분 분할
+        last_bp = bp;
         return bp;
     } 
 
@@ -170,6 +176,7 @@ void *mm_malloc(size_t size)
     if ((bp = extend_heap(extendsize/WSIZE)) == NULL)
         return NULL;
     place(bp, asize);
+    last_bp = bp;
     return bp;
 }
 
@@ -185,19 +192,32 @@ void mm_free(void *bp)
 }
 
 
-// First-Fit search
+// Next_Fit search
 static void *find_fit(size_t asize)
 {
-    void *bp;
+    // First_Fit 에서는 bp에 heap_listp를 저장
+    // Next_Fit 에서는 last_bp(이전 탐색 종료 지점)
+    char* bp = last_bp;
 
-    // 다음 블록으로 넘어가면서, 크기가 0보다 큰 정상적인 부분에 검색
-    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
-        // 할당되어있지않고, 가용가능한 크기가 asize보다 크면 bp 반환
+    // last_bp부터, 다음블록으로 넘어가며 Epilogue 까지 검토
+    for (bp = NEXT_BLKP(bp); GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)){
         if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+            last_bp = bp;
             return bp;
         }
     }
-    return NULL; // fit한게 없는 경우
+
+    // 위에서 Epiloque까지 검토후 메모리 할당영역을 찾지 못하면, heap_listp 부터 last_bp 전까지 다시 검토
+    bp = heap_listp;
+    while (bp < last_bp){
+        bp = NEXT_BLKP(bp);
+        if (!GET_ALLOC(HDRP(bp)) && GET_SIZE(HDRP(bp)) >= asize){
+            last_bp = bp;
+            return bp;
+        }
+    }
+    
+    return NULL;
 }
 
 
@@ -228,7 +248,6 @@ void *mm_realloc(void *ptr, size_t size)
     void *oldptr = ptr;
     void *newptr;
     size_t copySize;
-    
     newptr = mm_malloc(size);
     if (newptr == NULL)
       return NULL;
